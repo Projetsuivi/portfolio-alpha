@@ -121,7 +121,7 @@ footer { padding-block: 30px 40px; font-size: 12.5px; color: var(--muted); }
   <form class="login-card" id="login-form" autocomplete="on">
     <h1>Portfolio Alpha</h1>
     <p class="muted" style="margin:0">The figures on this page are encrypted. Sign in to read them.</p>
-    <label for="user">Username<input id="user" name="username" type="text" autocomplete="username" required></label>
+    <label for="user">Username<input id="user" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>
     <label for="pass">Password<input id="pass" name="password" type="password" autocomplete="current-password" required></label>
     <label class="check" for="remember"><input id="remember" type="checkbox"> Remember me on this device</label>
     <button class="primary" type="submit" id="go">Sign in</button>
@@ -158,8 +158,8 @@ footer { padding-block: 30px 40px; font-size: 12.5px; color: var(--muted); }
 
     <section id="today">
       <h2>Today</h2>
-      <p class="lede muted">Tonight's reading of each model, why it does or does not trade, and what the evening run did on the two demo accounts.</p>
-      <div class="card"><h3>Prices now <span class="muted" id="prices-note" style="font-weight:400"></span></h3><div class="chips" id="prices"></div></div>
+      <p class="lede muted" id="today-lede">Tonight's reading of each model, why it does or does not trade, and what the evening run did on the two demo accounts.</p>
+      <div class="card"><h3><span id="prices-title">Prices now</span> <span class="muted" id="prices-note" style="font-weight:400"></span></h3><div class="chips" id="prices"></div></div>
       <div class="card"><h3>Signals <span class="muted" style="font-weight:400">· tap a market for its chart</span></h3>
         <p class="banner" id="intraday-note" hidden>During the day the alphas are worked out at the current price, as if the market closed now: indicative only. The signal itself is decided on the close, at the 19:35 London run.</p>
         <div id="signals"></div></div>
@@ -223,7 +223,7 @@ document.getElementById("login-form").addEventListener("submit", async (ev) => {
   go.disabled = true; go.textContent = "Checking...";
   const remember = document.getElementById("remember").checked;
   try {
-    const key = await deriveKey(document.getElementById("user").value, document.getElementById("pass").value, remember);
+    const key = await deriveKey(document.getElementById("user").value.trim(), document.getElementById("pass").value, remember);
     const data = await openWith(key);
     if (remember) storeSet(toB64(await crypto.subtle.exportKey("raw", key)));
     show(data);
@@ -240,6 +240,37 @@ const money = (x, cents = true) => (x < 0 ? "-$" : "$") + (cents ? nf2 : nf0).fo
 const signed = (x, cents = true) => (x >= 0 ? "+" : "") + money(x, cents);
 const pct = (x, d = 2) => (x >= 0 ? "+" : "") + x.toFixed(d) + "%";
 const day = (s) => { const [y, m, d] = s.split("-"); return `${d}/${m}/${y}`; };
+
+/* The update this page should show by now, from the schedule (weekdays,
+   London time): the Intraday Check from 08:30 and from 15:00, the evening
+   run from 19:35, each given half an hour or more to come in. Returns
+   that update ("08:30", or "19:35 of 12/11/2026" for an earlier day) when
+   the page is older, else null. */
+function missedUpdate(generated, at = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/London", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23"}).formatToParts(at).map((x) => [x.type, x.value]));
+  const now = `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+  const slots = [["19:35", "20:15"], ["15:00", "15:30"], ["08:30", "09:00"]];
+  for (let k = 0; k < 7; k++) {
+    const t = new Date(Date.UTC(+p.year, +p.month - 1, +p.day - k));
+    if (t.getUTCDay() === 0 || t.getUTCDay() === 6) continue;
+    const ds = t.toISOString().slice(0, 10);
+    for (const [start, due] of slots) {
+      if (`${ds} ${due}` > now) continue;
+      if (generated >= `${ds} ${start}`) return null;
+      return k === 0 ? start : `${start} of ${day(ds)}`;
+    }
+  }
+  return null;
+}
+function staleCheck(D) {
+  const late = missedUpdate(D.generated), says = [];
+  if (late) says.push(`Not updated since ${D.generated.split(" ")[1]} on ${day(D.generated.split(" ")[0])}: the ${late} London update has not come through, so everything below dates from then.`);
+  if (D.stale_days > 0) says.push(`The data is ${D.stale_days} session(s) behind: tonight's figures are not in yet.`);
+  const s = document.getElementById("stale");
+  s.hidden = !says.length;
+  s.textContent = says.join(" ");
+}
 const dm = (s) => { const [, m, d] = s.split("-"); return `${d}/${m}`; };
 const tone = (x) => (x >= 0 ? "good" : "bad");
 const priceFmt = (book, v) => v == null ? "-" : "$" + (book === "Copper" ? v.toFixed(3) : book === "Gold" ? nf0.format(v) : nf2.format(v));
@@ -447,7 +478,8 @@ function show(D) {
   document.getElementById("app").hidden = false;
   const C = D.colors || {};
   document.getElementById("updated").textContent = `Updated ${D.generated.split(" ")[1]} on ${day(D.generated.split(" ")[0])} (London) · data to ${day(D.as_of)}`;
-  if (D.stale_days > 0) { const s = document.getElementById("stale"); s.hidden = false; s.textContent = `The data is ${D.stale_days} session(s) behind: tonight's figures are not in yet.`; }
+  staleCheck(D);
+  setInterval(() => staleCheck(D), 5 * 60 * 1000);
 
   // Live
   const L = D.live;
@@ -498,8 +530,13 @@ function show(D) {
         text: name === "Brent-WTI" ? `${ch >= 0 ? "+" : ""}${ch.toFixed(2)} $` : pct(ch)})));
   }
   const src = Object.values(P)[0]?.source;
-  document.getElementById("prices-note").textContent = src === "OANDA" ? "· OANDA, move since last night 20:00 London" : src ? "· the models' last price" : "";
-  if (D.moment === "intraday") document.getElementById("intraday-note").hidden = false;
+  if (src && src !== "OANDA") document.getElementById("prices-title").textContent = "Last close";
+  document.getElementById("prices-note").textContent = src === "OANDA" ? "· OANDA, move since last night 20:00 London"
+    : src ? `· the models' futures prices on ${day(D.as_of)}, not live` : "";
+  if (D.moment === "intraday") {
+    document.getElementById("intraday-note").hidden = false;
+    document.getElementById("today-lede").textContent = `Each model read at the ${D.generated.split(" ")[1]} London price (indicative), and the two demo accounts as they stand now.`;
+  }
   const CH = D.today.charts || {};
   const keyOf = (line) => line.startsWith("WTI/BR") ? "WTI/Brent" : line.startsWith("BRENT") ? "Brent" : line.startsWith("COPPER") ? "Copper" : line.startsWith("GOLD") ? "Gold" : null;
   const pxOf = {"Brent": "Brent", "Copper": "Copper", "Gold": "Gold", "WTI/Brent": "Brent-WTI"};
